@@ -1,6 +1,7 @@
 package nomad
 
 import (
+	"fmt"
 	"time"
 
 	metrics "github.com/armon/go-metrics"
@@ -13,6 +14,9 @@ import (
 type Plan struct {
 	srv    *Server
 	logger log.Logger
+
+	// ctx provides context regarding the underlying connection
+	ctx *RPCContext
 }
 
 // Submit is used to submit a plan to the leader
@@ -21,6 +25,11 @@ func (p *Plan) Submit(args *structs.PlanRequest, reply *structs.PlanResponse) er
 		return err
 	}
 	defer metrics.MeasureSince([]string{"nomad", "plan", "submit"}, time.Now())
+
+	// Ensure the connection was initiated by another server if TLS is used.
+	if err := p.validateTLSCertificate(); err != nil {
+		return fmt.Errorf("invalid server connection in region %s: %v", p.srv.Region(), err)
+	}
 
 	// Pause the Nack timer for the eval as it is making progress as long as it
 	// is in the plan queue. We resume immediately after we get a result to
@@ -49,4 +58,13 @@ func (p *Plan) Submit(args *structs.PlanRequest, reply *structs.PlanResponse) er
 	reply.Result = result
 	reply.Index = result.AllocIndex
 	return nil
+}
+
+func (p *Plan) validateTLSCertificate() error {
+	if p.srv.config.TLSConfig == nil || !p.srv.config.TLSConfig.VerifyServerHostname {
+		return nil
+	}
+
+	expected := fmt.Sprintf("server.%s.nomad", p.srv.Region())
+	return p.ctx.ValidateCertificateForName(expected)
 }

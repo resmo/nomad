@@ -331,7 +331,7 @@ func (c *JobRunCommand) Run(args []string) int {
 		}
 		backoff := helper.Backoff(retryBackoffBase, retryBackoffMax, uint64(attempt))
 		c.Ui.Warn(fmt.Sprintf("Error submitting job (attempt %d/%d): %s; retrying in %s...",
-			attempt+1, retry, err, backoff))
+			attempt+1, retry+1, err, backoff))
 		time.Sleep(backoff)
 	}
 

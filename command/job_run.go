@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/nomad/api"
+	"github.com/hashicorp/nomad/helper"
 	"github.com/hashicorp/nomad/helper/pointer"
 	"github.com/posener/complete"
 )
@@ -127,6 +128,12 @@ Run Options:
   -var-file=path
     Path to HCL2 file containing user variables.
 
+  -retry
+    If set, the command will retry the job registration up to this many times
+    on transient errors (such as connectivity issues). Defaults to 3. A delay
+    with exponential backoff is applied between retries, starting at 1 second
+    and capped at 12 seconds.
+
   -verbose
     Display full information.
 `
@@ -155,6 +162,7 @@ func (c *JobRunCommand) AutocompleteFlags() complete.Flags {
 			"-var-file":           complete.PredictFiles("*.var"),
 			"-eval-priority":      complete.PredictNothing,
 			"-ui":                 complete.PredictNothing,
+			"-retry":              complete.PredictAnything,
 		})
 }
 
@@ -172,6 +180,7 @@ func (c *JobRunCommand) Run(args []string) int {
 	var detach, verbose, output, override, preserveCounts, preserveResources, openURL bool
 	var checkIndexStr, consulNamespace, vaultNamespace string
 	var evalPriority int
+	var retry int
 
 	flagSet := c.Meta.FlagSet(c.Name(), FlagSetClient)
 	flagSet.Usage = func() { c.Ui.Output(c.Help()) }
@@ -190,8 +199,15 @@ func (c *JobRunCommand) Run(args []string) int {
 	flagSet.Var(&c.JobGetter.VarFiles, "var-file", "")
 	flagSet.IntVar(&evalPriority, "eval-priority", 0, "")
 	flagSet.BoolVar(&openURL, "ui", false, "")
+	flagSet.IntVar(&retry, "retry", 3, "")
 
 	if err := flagSet.Parse(args); err != nil {
+		return 1
+	}
+
+	// Validate retry flag
+	if retry < 0 {
+		c.Ui.Error("The -retry flag must be zero or a positive integer")
 		return 1
 	}
 
@@ -288,9 +304,17 @@ func (c *JobRunCommand) Run(args []string) int {
 		opts.ModifyIndex = checkIndex
 	}
 
-	// Submit the job
-	resp, _, err := client.Jobs().RegisterOpts(job, opts, nil)
-	if err != nil {
+	// Submit the job with optional retries on transient errors.
+	var resp *api.JobRegisterResponse
+	const (
+		retryBackoffBase = time.Second
+		retryBackoffMax  = 12 * time.Second
+	)
+	for attempt := 0; ; attempt++ {
+		resp, _, err = client.Jobs().RegisterOpts(job, opts, nil)
+		if err == nil {
+			break
+		}
 		if strings.Contains(err.Error(), api.RegisterEnforceIndexErrPrefix) {
 			// Format the error specially if the error is due to index
 			// enforcement
@@ -301,9 +325,14 @@ func (c *JobRunCommand) Run(args []string) int {
 				return 1
 			}
 		}
-
-		c.Ui.Error(fmt.Sprintf("Error submitting job: %s", err))
-		return 1
+		if attempt >= retry {
+			c.Ui.Error(fmt.Sprintf("Error submitting job: %s", err))
+			return 1
+		}
+		backoff := helper.Backoff(retryBackoffBase, retryBackoffMax, uint64(attempt))
+		c.Ui.Warn(fmt.Sprintf("Error submitting job (attempt %d/%d): %s; retrying in %s...",
+			attempt+1, retry+1, err, backoff))
+		time.Sleep(backoff)
 	}
 
 	// Print any warnings if there are any

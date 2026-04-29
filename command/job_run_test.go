@@ -281,3 +281,63 @@ func TestRunCommand_JSON(t *testing.T) {
 	must.Eq(t, "", stderr)
 	must.NotEq(t, "", stdout)
 }
+
+func TestRunCommand_RetryFlag_Invalid(t *testing.T) {
+	ci.Parallel(t)
+	ui := cli.NewMockUi()
+	cmd := &JobRunCommand{Meta: Meta{Ui: ui}}
+
+	// Fails on negative retry value
+	if code := cmd.Run([]string{"-retry=-1", "/dev/null"}); code != 1 {
+		t.Fatalf("expected exit code 1 for negative retry, got: %d", code)
+	}
+	if out := ui.ErrorWriter.String(); !strings.Contains(out, "-retry flag must be zero or a positive integer") {
+		t.Fatalf("expected retry validation error, got: %s", out)
+	}
+}
+
+func TestRunCommand_RetryFlag_RetriesOnFailure(t *testing.T) {
+	ci.Parallel(t)
+
+	fh, err := os.CreateTemp("", "nomad")
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer os.Remove(fh.Name())
+	_, err = fh.WriteString(`
+job "job1" {
+	type = "service"
+	datacenters = [ "dc1" ]
+	group "group1" {
+		count = 1
+		task "task1" {
+			driver = "exec"
+			resources {
+				cpu = 1000
+				memory = 512
+			}
+		}
+	}
+}`)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	ui := cli.NewMockUi()
+	cmd := &JobRunCommand{Meta: Meta{Ui: ui}}
+
+	// With -retry=1, still fails but should print a retry warning before final error.
+	// One retry means: 1 initial attempt + 1 retry = 2 total attempts.
+	// The retry sleeps 1s between attempts, so this test takes ~1s.
+	if code := cmd.Run([]string{"-address=nope", "-retry=1", fh.Name()}); code != 1 {
+		t.Fatalf("expected exit code 1, got: %d", code)
+	}
+	errOut := ui.ErrorWriter.String()
+	if !strings.Contains(errOut, "Error submitting job") {
+		t.Fatalf("expected submission error, got: %s", errOut)
+	}
+	// The retry warning message is written via c.Ui.Warn which goes to ErrorWriter in MockUi
+	if !strings.Contains(errOut, "retrying in") {
+		t.Fatalf("expected retry warning messages in error output, got: %s", errOut)
+	}
+}

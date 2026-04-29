@@ -130,9 +130,9 @@ Run Options:
 
   -retry
     If set, the command will retry the job registration up to this many times
-    on transient errors (such as connectivity issues). By default, no retries
-    are performed (0). A delay with exponential backoff is applied between
-    retries, starting at 1 second and capped at 30 seconds.
+    on transient errors (such as connectivity issues). Defaults to 3. A delay
+    with exponential backoff is applied between retries, starting at 1 second
+    and capped at 12 seconds.
 
   -verbose
     Display full information.
@@ -199,7 +199,7 @@ func (c *JobRunCommand) Run(args []string) int {
 	flagSet.Var(&c.JobGetter.VarFiles, "var-file", "")
 	flagSet.IntVar(&evalPriority, "eval-priority", 0, "")
 	flagSet.BoolVar(&openURL, "ui", false, "")
-	flagSet.IntVar(&retry, "retry", 0, "")
+	flagSet.IntVar(&retry, "retry", 3, "")
 
 	if err := flagSet.Parse(args); err != nil {
 		return 1
@@ -308,7 +308,7 @@ func (c *JobRunCommand) Run(args []string) int {
 	var resp *api.JobRegisterResponse
 	const (
 		retryBackoffBase = time.Second
-		retryBackoffMax  = 30 * time.Second
+		retryBackoffMax  = 12 * time.Second
 	)
 	for attempt := 0; ; attempt++ {
 		resp, _, err = client.Jobs().RegisterOpts(job, opts, nil)

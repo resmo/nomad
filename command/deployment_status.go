@@ -16,6 +16,7 @@ import (
 	"github.com/gosuri/uilive"
 	"github.com/hashicorp/nomad/api"
 	"github.com/hashicorp/nomad/api/contexts"
+	"github.com/hashicorp/nomad/helper"
 	"github.com/mitchellh/go-glint"
 	"github.com/mitchellh/go-glint/components"
 	"github.com/moby/term"
@@ -277,18 +278,38 @@ func (c *DeploymentStatusCommand) ttyMonitor(client *api.Client, deployID string
 	var statusComponent *glint.LayoutComponent
 	var endSpinner *glint.LayoutComponent
 
+	// Retry on error monitoring config
+	const (
+		retryBackoffBase = time.Second
+		retryBackoffMax  = 8 * time.Second
+		retry            = 4
+	)
+
 UPDATE:
 	for {
 		var deploy *api.Deployment
 		var meta *api.QueryMeta
-		deploy, meta, err = client.Deployments().Info(deployID, &q)
-		if err != nil {
+
+		for attempt := 0; ; attempt++ {
+			deploy, meta, err = client.Deployments().Info(deployID, &q)
+			if err == nil {
+				break
+			}
+
+			if attempt >= retry {
+				return
+			}
+
+			backoff := helper.Backoff(retryBackoffBase, retryBackoffMax, uint64(attempt))
+
 			d.Append(glint.Layout(glint.Style(
-				glint.Text(fmt.Sprintf("%s: Error fetching deployment: %v", formatTime(time.Now()), err)),
+				glint.Text(fmt.Sprintf("%s: Error fetching deployment: %v, retrying in %s (attempt %d/%d)",
+					formatTime(time.Now()), err, backoff, retry+1, attempt+1)),
 				glint.Color("red"),
 			)).MarginLeft(4), glint.Text(""))
 			d.RenderFrame()
-			return
+
+			time.Sleep(backoff)
 		}
 
 		status = deploy.Status
